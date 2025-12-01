@@ -4,7 +4,7 @@
 
 // 1. Include MicroTFLite Library
 #include <MicroTFLite.h>
-#include "model_new.h"
+#include "model_new.h" // Ensure this file is in your sketch folder
 
 // ================= CONFIGURATION =================
 // Normalization constants (Must match Python training!)
@@ -15,7 +15,7 @@ const float STDS[]  = { 1.8326, 8.2414, 1.5094 };
 #define PREDICT_STEPS 60
 #define FEATURES 3 
 
-// TFLite Memory (60KB is safe for N16R8)
+// TFLite Memory (Increased to 256KB for safety)
 const int kArenaSize = 256 * 1024;
 uint8_t tensorArena[kArenaSize];
 
@@ -38,23 +38,23 @@ void setup() {
 
   // 1. Initialize BME280
   Wire.begin(); // SDA=11, SCL=12 for Nano ESP32
+  
+  // Try standard addresses
   if (!bme.begin(0x76, &Wire)) { 
-    Serial.println("Standard init failed. Trying forced ID...");
-  Serial.println("BME280 Initialized.");
+    if (!bme.begin(0x77, &Wire)) {
+      Serial.println("ERROR: BME280 not found. Check wiring!");
+      while(1);
+    }
   }
+  Serial.println("BME280 Initialized.");
 
   // 2. Initialize MicroTFLite
-  // API: ModelInit(model_data, arena_pointer, arena_size)
   if (!ModelInit(weather_model_new, tensorArena, kArenaSize)) {
     Serial.println("Model Initialization Failed!");
     while(1);
   }
   Serial.println("Model Loaded Successfully.");
   
-  // Optional: Print model info
-  //Serial.print("Input Tensor Size: "); Serial.println(ModelGetInputSize(0));
-  //Serial.print("Output Tensor Size: "); Serial.println(ModelGetOutputSize(0));
-
   // 3. Pre-fill Buffer with 30 mins of history
   Serial.println("Pre-filling buffer...");
   const float prefillData[30][3] = {
@@ -115,10 +115,7 @@ void addReading(float t, float h, float p) {
 }
 
 void runForecast() {
-  // 1. Prepare Input Data (Flattened)
-  // The library expects us to set inputs one by one or as a block.
-  // For efficiency, we'll calculate values and set them.
-  
+  // 1. Prepare Input Data
   int readIdx = bufferHead; 
   if (!bufferFilled) readIdx = 0;
 
@@ -130,6 +127,7 @@ void runForecast() {
     float nH = (historyBuffer[bufPos][1] - MEANS[1]) / STDS[1];
     float nP = (historyBuffer[bufPos][2] - MEANS[2]) / STDS[2];
     
+    // Debug first input to check for NANs
     if (i == 0) {
        Serial.print("Debug Input [0]: ");
        Serial.print(nT); Serial.print(", ");
@@ -137,7 +135,7 @@ void runForecast() {
        Serial.println(nP);
     }
     
-    // Set Input Tensor values (Index = step * features + feature_idx)
+    // Set Input Tensor
     ModelSetInput(nT, i * FEATURES + 0);
     ModelSetInput(nH, i * FEATURES + 1);
     ModelSetInput(nP, i * FEATURES + 2);
@@ -149,27 +147,69 @@ void runForecast() {
     return;
   }
 
-  // 3. Read Output
+  // 3. ANALYZE FORECAST
   Serial.println("--- FORECAST (MicroTFLite) ---");
   Serial.println("Min  Temp   Hum   Pres");
+
+  float currentP = 0, futureP = 0;
+  float maxH = 0;
+  float futureT = 0;
   
-  for (int step = 9; step < PREDICT_STEPS; step += 10) {
+  for (int step = 0; step < PREDICT_STEPS; step++) {
     int baseIdx = step * FEATURES;
     
-    // Get Output Tensor values
     float outT = ModelGetOutput(baseIdx + 0);
     float outH = ModelGetOutput(baseIdx + 1);
     float outP = ModelGetOutput(baseIdx + 2);
 
-    // Denormalize
     float predT = (outT * STDS[0]) + MEANS[0];
     float predH = (outH * STDS[1]) + MEANS[1];
     float predP = (outP * STDS[2]) + MEANS[2];
 
-    Serial.print("+"); Serial.print(step + 1); Serial.print("m ");
-    Serial.print(predT, 1); Serial.print("  ");
-    Serial.print(predH, 1); Serial.print("  ");
-    Serial.println(predP, 1);
+    // Capture stats for decision engine
+    if (step == 0) currentP = predP;      // "Now"
+    if (step == 59) {                     // "Future" (60th minute)
+        futureP = predP; 
+        futureT = predT;
+    }
+    if (predH > maxH) maxH = predH;
+
+    // Print every 10th minute
+    if ((step + 1) % 10 == 0) {
+      Serial.print("+"); Serial.print(step + 1); Serial.print("m ");
+      Serial.print(predT, 1); Serial.print("  ");
+      Serial.print(predH, 1); Serial.print("  ");
+      Serial.println(predP, 1);
+    }
+  }
+
+  // 4. WEATHER DECISION ENGINE
+  Serial.println("\n>>> ANALYSIS <<<");
+  float pressureDelta = futureP - currentP;
+  bool badWeather = false;
+
+  // Rule 1: Storm Warning (Drop > 0.8 hPa/hr)
+  if (pressureDelta < -0.8) {
+    Serial.println("WARNING: Rapid Pressure Drop detected!");
+    Serial.println("Forecast: High winds or storm approaching.");
+    badWeather = true;
+  }
+
+  // Rule 2: Rain Likely (Low Trend + High Hum)
+  // Note: Delta < -0.3 means falling pressure, MaxH > 85% means saturation
+  if (pressureDelta < -0.3 && maxH > 85.0) {
+    Serial.println("ALERT: Pressure falling + High Humidity.");
+    Serial.println("Forecast: Rain likely within 60 mins.");
+    badWeather = true;
+  }
+
+  // Rule 3: Heat/Cold Alerts
+  if (futureT > 35.0) Serial.println("ALERT: High Heat Index likely.");
+  if (futureT < 5.0)  Serial.println("ALERT: Freezing conditions likely.");
+
+  if (!badWeather) {
+    if (pressureDelta > 0.5) Serial.println("STATUS: Pressure rising. Skies clearing.");
+    else Serial.println("STATUS: Weather conditions stable.");
   }
   Serial.println("------------------------------");
 }
