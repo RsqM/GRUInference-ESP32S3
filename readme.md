@@ -112,21 +112,8 @@ Efficiency: O(1) access without memcpy shifting. We maintain a head pointer and 
 
 ### 4.2 On-Device Normalization
 The model expects Z-score normalized inputs. The microcontroller stores the Mean ($\mu$) and Std Dev ($\sigma$) derived from the training set in PROGMEM to perform this transformation in real-time:
-�
-�
-�
-�
-�
-=
-�
-−
-�
-�
-x 
-norm
- = 
-σ
-x−μ
+
+$x$ $=$ $x$ - $\mu$ $/$ $\sigma$
  
 
 ### 4.3 Heuristic Decision Engine
