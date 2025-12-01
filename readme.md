@@ -142,4 +142,3 @@ Fabrication: Printed in PETG for UV resistance and thermal stability. (STL files
 /docs: Detailed logs of the Edge Impulse API integration.
 
 Reference implementation for deploying Recurrent Neural Networks on memory-constrained devices.
-
